@@ -3,7 +3,6 @@
 #define SDA_PIN    21
 #define SCL_PIN    22
 #define BUZZER_PIN 19
-#define PULSE_PIN  34
 
 uint8_t ADDR = 0x68;
 
@@ -43,7 +42,7 @@ void setup() {
   Wire.beginTransmission(ADDR); Wire.write(0x1C); Wire.write(0x10); Wire.endTransmission();
   delay(100);
 
-  Serial.println("=== PRUEBA MPU6050 + PULSESENSOR + BUZZER ===");
+  Serial.println("=== PRUEBA MPU6050 + BUZZER ===");
 }
 
 float readMag() {
@@ -58,33 +57,23 @@ float readMag() {
 }
 
 void loop() {
-  // MPU6050
   float a = readMag();
   if (a < 0) {
     Serial.println("Error leyendo el MPU6050");
     delay(500);
     return;
   }
-  Serial.printf("MPU: %.2f g | ", a);
 
-  // PulseSensor
-  int pulse = analogRead(PULSE_PIN);
-  Serial.printf("Pulso: %d | ", pulse);
+  Serial.printf("Aceleracion total: %.2f g\n", a);
 
-  // Buzzer: suena si detecta impacto o pulso alto
+  // Si detecta mas de 2.5 g, suena el buzzer 1 segundo
   if (a > 2.5) {
-    Serial.println("IMPACTO, sonando buzzer");
+    Serial.println(">>> IMPACTO DETECTADO, sonando buzzer");
     buzzerTone(2500);
+    delay(1000);
+    buzzerTone(0);
     delay(500);
-    buzzerTone(0);
-  } else if (pulse > 2000) {
-    Serial.println("Pulso alto, sonando buzzer corto");
-    buzzerTone(2000);
-    delay(100);
-    buzzerTone(0);
-  } else {
-    Serial.println("Todo normal");
   }
 
-  delay(200);
+  delay(100);
 }
