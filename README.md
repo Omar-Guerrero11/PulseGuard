@@ -1,123 +1,116 @@
 # Pulse Guard
 
-Pulse Guard es un proyecto de una pulsera inteligente diseñada para detectar posibles caídas de personas mayores y alertar rápidamente a una persona responsable, como un familiar o cuidador.
+Pulse Guard es un prototipo de pulsera inteligente para personas mayores. Usa un sensor de pulso, buzzer, motor de vibración y botón físico. Puede configurarse por Bluetooth, conectarse a Wi-Fi y EMQX mediante MQTT, y enviar eventos a una aplicación a través de Firebase.
 
-> Estado del proyecto: prototipo inicial. El código actual permite probar el buzzer, el sensor de pulso y el MPU6050. La detección definitiva y la conexión con una aplicación móvil aún están en desarrollo.
+> Este firmware no incluye MPU6050. Las alarmas pueden probarse por el botón físico, MQTT o BLE. Antes de usarlo como sistema real, la detección debe validarse con pruebas reales y ajustar los intervalos de confirmación y los valores del sensor de pulso.
 
-## Idea del proyecto
+## Componentes
 
-La pulsera combina diferentes señales físicas para reducir falsas alarmas:
+| Componente         | Uso                                       |
+| ------------------ | ----------------------------------------- |
+| ESP32              | Procesamiento, Bluetooth, Wi-Fi y MQTT    |
+| Sensor de pulso    | Estimación aproximada de BPM              |
+| Buzzer             | Alarma sonora                             |
+| Motor de vibración | Alerta táctil                             |
+| Botón              | Cancelar una alerta o ejecutar una prueba |
 
-- **MPU6050:** mide aceleración y movimiento para identificar impactos o cambios bruscos de orientación.
-- **Sensor de pulso:** observa la frecuencia y variaciones del pulso.
-- **Buzzer:** genera una alarma audible cuando se detecta una posible caída.
-- **Botón:** permite detener o confirmar/cancelar la alarma desde la pulsera.
-- **Aplicación móvil:** recibe los datos y envía una notificación al familiar o encargado.
+## Conexiones
 
-Al detectarse una posible caída, el sistema activa el buzzer y espera una confirmación mediante el botón. Después debe enviar la alerta a la aplicación, junto con información como el estado del pulso, la aceleración y la hora de la detección.
+| Señal           |     Pin |
+| --------------- | ------: |
+| Botón           | GPIO 18 |
+| Buzzer          | GPIO 19 |
+| Motor           | GPIO 25 |
+| Sensor de pulso | GPIO 34 |
 
-## Funcionamiento esperado
+El botón usa `INPUT_PULLUP`, así que su conexión debe llevarlo a GND al presionar.
 
-1. La pulsera recopila continuamente datos del MPU6050 y del sensor de pulso.
-2. El sistema analiza si existe una combinación compatible con una caída, como un impacto fuerte seguido de una falta de movimiento o una posición diferente.
-3. Si se considera una posible caída:
-   - Suena el buzzer.
-   - Se inicia una cuenta regresiva para que el usuario confirme que está bien.
-   - Si no se presiona el botón o se confirma que ocurrió una caída, se envía una alerta.
-4. La aplicación recibe la alerta y notifica al familiar o cuidador.
-5. La persona responsable puede abrir la app y consultar el estado o intentar comunicarse con el usuario.
+## Configuración por Bluetooth
 
-Si el usuario presiona el botón antes de que termine la cuenta regresiva, el sistema entiende que está bien y cancela la alerta.
+La ESP32 anuncia el dispositivo BLE `PulseGuard` y crea un servicio con estas características:
 
-## Componentes actuales
+| Característica     | Contenido                                                |
+| ------------------ | -------------------------------------------------------- |
+| SSID Wi-Fi         | Nombre de la red                                         |
+| Clave Wi-Fi        | Contraseña de la red                                     |
+| Host MQTT          | Dirección de EMQX, sin puerto                            |
+| Usuario MQTT       | Usuario registrado en EMQX                               |
+| Clave MQTT         | Contraseña registrada en EMQX                            |
+| ID del dispositivo | Identificador de la pulsera                              |
+| Comando            | `CONECTAR`, `CAIDA`, `CANCELAR`, `TEST` o `RESET_CONFIG` |
+| Estado             | Último estado de la pulsera                              |
 
-| Componente  | Uso                                              |
-| ----------- | ------------------------------------------------ |
-| ESP32       | Procesamiento principal, sensores y comunicación |
-| MPU6050     | Aceleración y orientación                        |
-| PulseSensor | Lectura aproximada del pulso                     |
-| Buzzer      | Alerta sonora                                    |
-| Botón       | Cancelar la alarma o confirmar estado seguro     |
+Los datos aprobados se guardan en la memoria NVS de la ESP32 mediante `Preferences`.
 
-## Conexiones del prototipo
+## Topics MQTT
 
-| Señal           | Pin ESP32 |
-| --------------- | --------: |
-| MPU6050 SDA     |   GPIO 21 |
-| MPU6050 SCL     |   GPIO 22 |
-| Buzzer          |   GPIO 19 |
-| Sensor de pulso |   GPIO 34 |
-
-El sensor de pulso utiliza una entrada analógica. Para una versión final debe haber una medición estable y un diseño eléctrico adecuado para la señal analógica.
-
-## Detección de caída
-
-La detección final no debería depender de un solo dato. Se recomienda usar una combinación de:
-
-- aceleración máxima durante el impacto;
-- caída rápida seguida de poca actividad;
-- cambio de inclinación detectado por el MPU6050;
-- pulso registrado antes y después del posible accidente;
-- tiempo sin movimiento;
-- confirmación o cancelación mediante el botón.
-
-Ejemplo conceptual:
+Por defecto, el identificador inicial es `PULSERA001`:
 
 ```text
-Impacto fuerte
-+ poca actividad posterior
-+ cambio de inclinación
-= posible caída
-
-Posible caída
-+ botón presionado = cancelar alerta
-+ tiempo agotado = enviar alerta
+pulsera/PULSERA001/pulsos
+pulsera/PULSERA001/alerta
+pulsera/PULSERA001/estado
+pulsera/PULSERA001/comando
 ```
 
-El número exacto de umbrales debe ajustarse mediante pruebas con la pulsera colocada en diferentes posiciones y movimientos normales.
-
-## Comunicación con la aplicación
-
-En versiones posteriores se podría usar una conexión Wi-Fi o una plataforma móvil para enviar datos al servidor y luego mostrar una notificación en el teléfono del encargado.
-
-Ejemplo de mensaje de alerta:
+Ejemplos de mensajes:
 
 ```json
-{
-	"tipo": "possible_fall",
-	"fecha_hora": "2026-11-23T12:00:00",
-	"aceleracion_g": 2.8,
-	"pulso_bpm": 92,
-	"sin_movimiento_segundos": 20,
-	"confirmacion_usuario": false
-}
+{ "bpm": 78 }
 ```
 
-El formato puede cambiar según la tecnología que se utilice para la aplicación y el servidor.
+```json
+{ "tipo": "CAIDA" }
+```
 
-## Limitaciones del prototipo
+```json
+{ "estado": "NORMAL", "wifi": true, "mqtt": true }
+```
 
-- La lectura actual del sensor de pulso no garantiza una medición médica.
-- Los umbrales actuales pueden causar falsas alarmas.
-- El botón aún no está conectado ni implementado en el código actual.
-- La aplicación móvil todavía no está integrada.
-- El dispositivo no cuenta actualmente con almacenamiento offline ni reconexión completa.
-- No reemplaza servicios médicos ni sistemas profesionales de emergencias.
+## Flujo de alerta
+
+1. Se ejecuta una posible alerta manual, por BLE, serial o MQTT.
+2. El buzzer y el motor comienzan a alertar.
+3. La ESP32 espera 10 segundos.
+4. Si se pulsa el botón, se publica `CANCELADA`.
+5. Si termina el tiempo, se publica `CAIDA`.
+
+Durante la cuenta regresiva puede enviarse `CANCELAR` desde MQTT o BLE.
+
+## Comandos seriales
+
+Escribe estos comandos en el monitor serie:
+
+```text
+CAIDA
+CANCELAR
+RESET_CONFIG
+```
+
+## Librerías necesarias
+
+Instala en Arduino IDE:
+
+- `PubSubClient` — MQTT.
+- El núcleo `esp32 by Espressif Systems` — Wi-Fi y BLE ya están incluidos.
+
+Selecciona la placa ESP32 que corresponda al hardware instalado y activa el puerto serie antes de cargar el sketch.
+
+## Seguridad
+
+- No publiques credenciales reales en GitHub.
+- Actualiza cualquier contraseña que haya sido compartida anteriormente.
+- El firmware actual usa `mqttTlsClient.setInsecure()`; para producción debe validar el certificado con la CA real.
+- Las características BLE actuales no cifran la contraseña Wi-Fi ni MQTT. Para una versión final debe implementarse emparejamiento seguro o un flujo de aprovisionamiento protegido.
 
 ## Próximos pasos
 
-- Agregar el botón para confirmar o cancelar alarmas.
-- Implementar estados: normal, posible caída, alerta y cancelada.
-- Calibrar el MPU6050 y los umbrales de aceleración.
-- Crear una lectura estable del sensor de pulso.
-- Registrar datos y realizar pruebas con movimientos reales.
-- Implementar Wi-Fi y autenticación del usuario.
-- Crear el backend y la aplicación móvil.
-- Agregar historial de alertas y estado de batería.
-- Enviar la ubicación si el diseño lo permite.
-- Aplicar detección de falsas alarmas.
+- Crear la pantalla de BLE en la aplicación MAUI.
+- Agregar la selección del dispositivo BLE.
+- Conectar y escribir las características de configuración.
+- Sustituir `setInsecure()` por validación real de certificados.
+- Ajustar el algoritmo de BPM con pruebas reales.
+- Integrar la publicación hacia el puente y Firebase.
+- Agregar batería y reconexión robusta.
 
-## Autoría y uso
-
-Este proyecto puede utilizarse como prototipo educativo y para pruebas de concepto. Antes de utilizarlo como un sistema real de asistencia médica, debe pasar por una etapa completa de pruebas, validación técnica y consideración de requisitos de seguridad.
-# PulseGuard
+Este proyecto no reemplaza un sistema médico ni garantiza la detección de todas las caídas.
