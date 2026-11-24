@@ -15,7 +15,7 @@
 
 #define PULSE_MIN_INTERVAL_MS 280
 #define PULSE_SEND_INTERVAL_MS 1000
-#define FALL_CONFIRM_MS 10000
+#define FALL_REPEAT_INTERVAL_MS 4000
 
 #define BLE_NAME_PREFIX "PulseGuard"
 
@@ -69,10 +69,9 @@ unsigned long lastWifiAttempt = 0;
 unsigned long lastMqttAttempt = 0;
 unsigned long lastPulsePublish = 0;
 unsigned long lastStatusPublish = 0;
-unsigned long alertStartedAt = 0;
+unsigned long lastFallPublish = 0;
 
-bool alertCountdown = false;
-bool alertSent = false;
+bool emergencyActive = false;
 bool buttonPressedBefore = false;
 
 volatile bool mqttMessageReceived = false;
@@ -145,44 +144,36 @@ void loadSettings() {
   preferences.end();
 }
 
-void startCountdown() {
-  if (alertCountdown) return;
+void publishFallAlert() {
+  lastFallPublish = millis();
 
-  alertCountdown = true;
-  alertSent = false;
-  alertStartedAt = millis();
-  setAlarm(true);
-  publishStatus("ESPERANDO_CONFIRMACION");
-  Serial.println("Posible alerta: presiona el boton para cancelar.");
+  if (mqtt.connected()) {
+    bool published = mqtt.publish(MQTT_ALERT_TOPIC, "CAIDA", false);
+    Serial.printf("Publicacion CAIDA en %s: %s\n",
+                  MQTT_ALERT_TOPIC,
+                  published ? "OK" : "FALLO");
+  } else {
+    Serial.println("CAIDA pendiente: MQTT desconectado.");
+  }
 }
 
-void cancelCountdown() {
-  if (!alertCountdown) return;
+void startEmergency() {
+  if (emergencyActive) return;
 
+  emergencyActive = true;
+  lastFallPublish = millis();
+  setAlarm(true);
+  publishStatus("ALERTA_ACTIVA");
+  Serial.println("Emergencia activa. Primer CAIDA en 4 segundos; despues cada 4 segundos.");
+}
+
+void cancelEmergency() {
+  if (!emergencyActive) return;
+
+  emergencyActive = false;
   setAlarm(false);
-  alertCountdown = false;
-  alertSent = false;
-
-  if (mqtt.connected()) {
-    mqtt.publish(MQTT_ALERT_TOPIC, "CANCELADA", false);
-  }
-
   publishStatus("NORMAL");
-  Serial.println("Alerta cancelada.");
-}
-
-void sendFallAlert() {
-  if (alertSent) return;
-
-  alertSent = true;
-  setAlarm(true);
-
-  if (mqtt.connected()) {
-    mqtt.publish(MQTT_ALERT_TOPIC, "CAIDA", false);
-  }
-
-  publishStatus("ALERTA_ENVIADA");
-  Serial.println("Alerta de caida publicada.");
+  Serial.println("Emergencia detenida.");
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -203,9 +194,9 @@ void processMqttCommand() {
   mqttCommand.toUpperCase();
 
   if (mqttCommand.indexOf("CAIDA") >= 0) {
-    startCountdown();
+    startEmergency();
   } else if (mqttCommand.indexOf("CANCELAR") >= 0) {
-    cancelCountdown();
+    cancelEmergency();
   } else if (mqttCommand.indexOf("TEST") >= 0) {
     setAlarm(true);
     delay(500);
@@ -369,8 +360,8 @@ void processSerial() {
   command.trim();
   command.toUpperCase();
 
-  if (command == "CAIDA") startCountdown();
-  if (command == "CANCELAR") cancelCountdown();
+  if (command == "CAIDA") startEmergency();
+  if (command == "CANCELAR") cancelEmergency();
   if (command == "RESET_CONFIG") {
     preferences.begin("pulsera", false);
     preferences.clear();
@@ -383,10 +374,10 @@ void processButton() {
   bool buttonPressed = digitalRead(BUTTON_PIN) == LOW;
 
   if (buttonPressed && !buttonPressedBefore) {
-    if (alertCountdown) {
-      cancelCountdown();
+    if (emergencyActive) {
+      cancelEmergency();
     } else {
-      startCountdown();
+      startEmergency();
     }
   }
 
@@ -421,9 +412,9 @@ public:
         lastWifiAttempt = 0;
         lastMqttAttempt = 0;
       } else if (text == "CAIDA") {
-        startCountdown();
+        startEmergency();
       } else if (text == "CANCELAR") {
-        cancelCountdown();
+        cancelEmergency();
       } else if (text == "RESET_CONFIG") {
         preferences.begin("pulsera", false);
         preferences.clear();
@@ -527,7 +518,7 @@ void loop() {
     }
   }
 
-  if (alertCountdown) {
+  if (emergencyActive) {
     static bool buzzerAlternate = false;
     static unsigned long lastAlternate = 0;
 
@@ -537,8 +528,8 @@ void loop() {
       buzzerTone(buzzerAlternate ? 2500 : 1800);
     }
 
-    if (millis() - alertStartedAt >= FALL_CONFIRM_MS) {
-      sendFallAlert();
+    if (millis() - lastFallPublish >= FALL_REPEAT_INTERVAL_MS) {
+      publishFallAlert();
     }
   }
 
