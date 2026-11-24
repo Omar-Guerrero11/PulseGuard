@@ -1,85 +1,134 @@
-# Pulse Guard
+# PulseGuard
 
-Pulse Guard es un prototipo de pulsera inteligente para personas mayores. Usa un sensor de pulso, buzzer, motor de vibración y botón físico. Puede configurarse por Bluetooth, conectarse a Wi-Fi y EMQX mediante MQTT, y enviar eventos a una aplicación a través de Firebase.
+PulseGuard es un prototipo para ESP32 que combina un sensor de pulso analógico, un botón físico y un buzzer. Permite activar/cancelar una alerta manualmente, mediante Bluetooth Low Energy (BLE), MQTT o el monitor serie, además de publicar la frecuencia cardiaca aproximada y el estado del dispositivo.
 
-> Este firmware no incluye MPU6050. Las alarmas pueden probarse por el botón físico, MQTT o BLE. Antes de usarlo como sistema real, la detección debe validarse con pruebas reales y ajustar los intervalos de confirmación y los valores del sensor de pulso.
+> Este firmware no incluye detección automática de caídas ni MPU6050. El código identifica pulsos por medio de cambios en la señal analógica y calcula BPM aproximados; no constituye un dispositivo médico y debe validarse con pruebas reales.
 
-## Componentes
+## Hardware
 
-| Componente         | Uso                                       |
-| ------------------ | ----------------------------------------- |
-| ESP32              | Procesamiento, Bluetooth, Wi-Fi y MQTT    |
-| Sensor de pulso    | Estimación aproximada de BPM              |
-| Buzzer             | Alarma sonora                             |
-| Motor de vibración | Alerta táctil                             |
-| Botón              | Cancelar una alerta o ejecutar una prueba |
+| Componente | Conexión |
+| --- | --- |
+| ESP32 | Placa principal |
+| Sensor de pulso | GPIO 34 (`PULSE_PIN`) |
+| Botón | GPIO 18 (`BUTTON_PIN`) |
+| Buzzer | GPIO 19 (`BUZZER_PIN`) |
 
-## Conexiones
+El botón usa `INPUT_PULLUP`, por lo que debe conectarse entre GPIO 18 y GND. El sensor de pulso es una entrada analógica de 12 bits.
 
-| Señal           |     Pin |
-| --------------- | ------: |
-| Botón           | GPIO 18 |
-| Buzzer          | GPIO 19 |
-| Motor           | GPIO 25 |
-| Sensor de pulso | GPIO 34 |
+No hay motor de vibración definido en el firmware principal. Para usarlo se debe agregar el pin y controlar el motor desde el código.
 
-El botón usa `INPUT_PULLUP`, así que su conexión debe llevarlo a GND al presionar.
+## Dependencias
 
-## Configuración por Bluetooth
+Instala en Arduino IDE:
 
-La ESP32 anuncia el dispositivo BLE `PulseGuard` y crea un servicio con estas características:
+- Núcleo **ESP32 by Espressif Systems**.
+- Biblioteca **PubSubClient**.
 
-| Característica     | Contenido                                                |
-| ------------------ | -------------------------------------------------------- |
-| SSID Wi-Fi         | Nombre de la red                                         |
-| Clave Wi-Fi        | Contraseña de la red                                     |
-| Host MQTT          | Dirección de EMQX, sin puerto                            |
-| Usuario MQTT       | Usuario registrado en EMQX                               |
-| Clave MQTT         | Contraseña registrada en EMQX                            |
-| ID del dispositivo | Identificador de la pulsera                              |
-| Comando            | `CONECTAR`, `CAIDA`, `CANCELAR`, `TEST` o `RESET_CONFIG` |
-| Estado             | Último estado de la pulsera                              |
+El sketch usa además las bibliotecas BLE, Wi-Fi, TLS y `Preferences` incluidas con el núcleo ESP32.
 
-Los datos aprobados se guardan en la memoria NVS de la ESP32 mediante `Preferences`.
+Selecciona la placa ESP32 correspondiente, instala las bibliotecas y abre `pulser-guard.ino`.
+
+## Configuración
+
+El firmware carga las credenciales Wi-Fi desde NVS con `Preferences`. MQTT se configura mediante un archivo privado:
+
+```text
+pulseguard_secrets.h
+```
+
+Debe definir al menos las siguientes constantes:
+
+```cpp
+#pragma once
+
+#define MQTT_HOST "tu-broker.example.com"
+#define MQTT_PORT 8883
+#define MQTT_USER "tu_usuario"
+#define MQTT_PASSWORD "tu_clave"
+#define MQTT_CLIENT_ID "PULSERA001"
+#define MQTT_ROOT_CA "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+```
+
+`MQTT_ROOT_CA` debe contener el certificado CA utilizado por el broker MQTT. Puedes basarte en `emqxsl-ca.crt`, pero verifica que sea el certificado correcto para tu servidor.
+
+No publiques credenciales reales ni certificados privados en repositorios públicos. Rota cualquier contraseña que haya sido compartida o incluida previamente en el historial del repositorio.
+
+El proyecto incluye un ejemplo de archivo con valores reales anteriores. Reemplázalos antes de compilar y considera mantener `pulseguard_secrets.h` fuera de Git.
+
+## Aprovisionamiento por BLE
+
+La ESP32 se anuncia como `PulseGuard` y expone el servicio:
+
+```text
+6f8f1c70-3a90-4f5b-8a72-001000000001
+```
+
+| Característica | UUID | Operación | Contenido |
+| --- | --- | --- | --- |
+| SSID | `...0011` | Escritura | Nombre de la red Wi-Fi |
+| Clave Wi-Fi | `...0012` | Escritura | Contraseña de la red |
+| Comando | `...0017` | Escritura | `CONECTAR`, `CAIDA`, `CANCELAR` o `RESET_CONFIG` |
+| Estado | `...0018` | Lectura/notificación | Estado actual |
+
+El prefijo completo de cada UUID es `6f8f1c70-3a90-4f5b-8a72-0010000000`.
+
+La secuencia básica es escribir primero SSID y contraseña, y después enviar `CONECTAR` en la característica de comando.
 
 ## Topics MQTT
 
-Por defecto, el identificador inicial es `PULSERA001`:
+El firmware usa topics fijos:
+
+| Tipo | Topic | Dirección |
+| --- | --- | --- |
+| Pulso | `pulsera/prueba/pulsos` | ESP32 -> broker |
+| Alerta | `pulsera/prueba` | ESP32 -> broker |
+| Estado | `pulsera/prueba/estado` | ESP32 -> broker |
+| Comando | `pulsera/prueba/comando` | Broker -> ESP32 |
+
+`pulsera/prueba/pulsos` publica:
 
 ```text
-pulsera/PULSERA001/pulsos
-pulsera/PULSERA001/alerta
-pulsera/PULSERA001/estado
-pulsera/PULSERA001/comando
+78
 ```
 
-Ejemplos de mensajes:
+o `0` cuando no se calcula un BPM válido en la ventana de un segundo.
+
+`pulsera/prueba` publica `CAIDA` cuando hay una emergencia activa. El mensaje se repite cada 4 segundos.
+
+`pulsera/prueba/estado` publica un JSON retenido aproximadamente cada 30 segundos y durante cambios de estado:
 
 ```json
-{ "bpm": 78 }
+{"estado":"NORMAL","wifi":true,"mqtt":true}
 ```
 
-```json
-{ "tipo": "CAIDA" }
-```
+Estados posibles definidos por el firmware:
 
-```json
-{ "estado": "NORMAL", "wifi": true, "mqtt": true }
-```
+- `CONFIGURACION_LISTA`
+- `SSID_RECIBIDO`
+- `CLAVE_WIFI_RECIBIDA`
+- `CONECTANDO`
+- `SIN_WIFI`
+- `CONECTANDO_WIFI`
+- `CONECTADO`
+- `SIN_MQTT`
+- `ALERTA_ACTIVA`
+- `NORMAL`
 
-## Flujo de alerta
+## Comandos MQTT
 
-1. Se ejecuta una posible alerta manual, por BLE, serial o MQTT.
-2. El buzzer y el motor comienzan a alertar.
-3. La ESP32 espera 10 segundos.
-4. Si se pulsa el botón, se publica `CANCELADA`.
-5. Si termina el tiempo, se publica `CAIDA`.
+Publica en `pulsera/prueba/comando`:
 
-Durante la cuenta regresiva puede enviarse `CANCELAR` desde MQTT o BLE.
+| Comando | Acción |
+| --- | --- |
+| `CAIDA` | Activa la alarma y la alerta MQTT |
+| `CANCELAR` | Cancela la alarma y vuelve a estado normal |
+| `TEST` | Hace sonar el buzzer durante 500 ms |
 
-## Comandos seriales
+La comparación acepta texto que contenga estos términos, ya que el firmware convierte el comando a mayúsculas antes de evaluarlo.
 
-Escribe estos comandos en el monitor serie:
+## Comandos del monitor serie
+
+Abre el monitor serie a 115200 baudios:
 
 ```text
 CAIDA
@@ -87,30 +136,33 @@ CANCELAR
 RESET_CONFIG
 ```
 
-## Librerías necesarias
+`RESET_CONFIG` borra las credenciales Wi-Fi almacenadas en NVS y reinicia la ESP32.
 
-Instala en Arduino IDE:
+## Botón físico
 
-- `PubSubClient` — MQTT.
-- El núcleo `esp32 by Espressif Systems` — Wi-Fi y BLE ya están incluidos.
+- Si no hay una emergencia activa, una pulsación activa la alerta.
+- Si hay una emergencia activa, una pulsación cancela la alerta.
+- El buzzer alterna entre 2500 Hz y 1800 Hz mientras la alerta permanece activa.
 
-Selecciona la placa ESP32 que corresponda al hardware instalado y activa el puerto serie antes de cargar el sketch.
+## Captura del pulso
 
-## Seguridad
+El firmware recalibra el mínimo y máximo analógico cada 3 segundos y calcula un umbral al 70 % del rango observado. Cuando la señal cruza el umbral, registra un intervalo entre latidos y lo valida entre 280 ms y 2000 ms.
 
-- No publiques credenciales reales en GitHub.
-- Actualiza cualquier contraseña que haya sido compartida anteriormente.
-- El firmware actual usa `mqttTlsClient.setInsecure()`; para producción debe validar el certificado con la CA real.
-- Las características BLE actuales no cifran la contraseña Wi-Fi ni MQTT. Para una versión final debe implementarse emparejamiento seguro o un flujo de aprovisionamiento protegido.
+Cada segundo calcula el BPM promedio de la ventana actual y publica el resultado por MQTT. Solo se aceptan BPM entre 40 y 220.
 
-## Próximos pasos
+## Compilación y carga
 
-- Crear la pantalla de BLE en la aplicación MAUI.
-- Agregar la selección del dispositivo BLE.
-- Conectar y escribir las características de configuración.
-- Sustituir `setInsecure()` por validación real de certificados.
-- Ajustar el algoritmo de BPM con pruebas reales.
-- Integrar la publicación hacia el puente y Firebase.
-- Agregar batería y reconexión robusta.
+1. Configura `pulseguard_secrets.h`.
+2. Añade el certificado CA real como `MQTT_ROOT_CA`.
+3. Selecciona la placa ESP32 y el puerto serie.
+4. Compila y carga `pulser-guard.ino`.
+5. Abre el monitor serie a 115200 baudios.
+6. Aprovisiona Wi-Fi por BLE o completa las credenciales existentes en NVS.
 
-Este proyecto no reemplaza un sistema médico ni garantiza la detección de todas las caídas.
+## Limitaciones
+
+- La publicación MQTT requiere Wi-Fi y una conexión TLS válida.
+- El envío de pulso se hace cada segundo, pero si el broker no está conectado no se publica.
+- Las características BLE permiten escribir datos sin cifrado adicional a nivel de aplicación; la protección depende de la seguridad BLE de la plataforma.
+- El firmware no publica cancelaciones hacia el topic de alerta, solo cambia el estado.
+- El cálculo de BPM es aproximado y depende de la orientación y calidad del sensor.
